@@ -1,0 +1,42 @@
+name:          modbus-tcp
+version:       0.6
+stability:     experimental
+author:        Roel van Dijk <roel@lambdacube.nl>, Tim Schwarte <tim@timschwarte.nl>
+maintainer:    Roel van Dijk <roel@lambdacube.nl>
+copyright:     2013–2017 Roel van Dijk, Tim Schwarte
+license:       BSD3
+license-file:  LICENSE
+homepage:      https://github.com/gzh/modbus-tcp
+category:      System
+synopsis:      Communicate with Modbus devices over TCP and over serial interface
+description:   Implements the Modbus TCP and RTU protocol variations.
+
+default-extensions:
+  - TypeFamilies
+  - BangPatterns
+  - DeriveDataTypeable
+  - GeneralizedNewtypeDeriving
+  - PackageImports
+  - TypeFamilies
+  - ScopedTypeVariables
+  - FlexibleContexts
+  - GADTs
+  - StandaloneDeriving
+  - TypeApplications
+
+library:
+    source-dirs: src
+    ghc-options: -Wall
+
+    dependencies:
+       - array
+       - base
+       - bytestring
+       - cereal
+       - mtl
+       - transformers
+
+    exposed-modules:
+        System.Modbus.TCP
+
+    language: Haskell2010

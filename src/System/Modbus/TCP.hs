@@ -1,8 +1,3 @@
-{-# language BangPatterns #-}
-{-# language DeriveDataTypeable #-}
-{-# language GeneralizedNewtypeDeriving #-}
-{-# language PackageImports #-}
-
 -- | An implementation of the Modbus TPC/IP protocol.
 --
 -- This implementation is based on the @MODBUS Application Protocol
@@ -17,15 +12,20 @@ module System.Modbus.TCP
   , Connection(..)
 
     -- * Types
-  , TCP_ADU(..)
-  , Header(..)
+  , ADU(..)
+  , HeaderRTU(..)
+  , HeaderTCP(..)
   , FunctionCode(..)
   , ExceptionCode(..)
   , ModbusException(..)
+  , ModbusVariation(..)
+  , ModbusRTU
+  , ModbusTCP
 
   , TransactionId(..)
   , ProtocolId(..)
   , UnitId(..)
+  , SlaveId(..)
   , RegAddress(..)
 
   , RetryPredicate
@@ -45,11 +45,14 @@ module System.Modbus.TCP
 import "base" Control.Exception.Base ( Exception )
 import "base" Control.Monad ( replicateM, mzero )
 import "base" Control.Monad.IO.Class ( MonadIO, liftIO )
+import Data.Array
+import Data.Bits
 import "base" Data.Bool ( bool )
 import "base" Data.Functor ( void )
 import "base" Data.Word ( Word8, Word16 )
-import "base" Data.Typeable ( Typeable )
+import "base" Data.Typeable ( Typeable, Proxy(..) )
 import "base" System.Timeout ( timeout )
+import Data.List (foldl')
 import qualified "cereal" Data.Serialize as Cereal ( encode, decode )
 import "cereal" Data.Serialize
   ( Serialize, Put, put, Get, get
@@ -57,6 +60,7 @@ import "cereal" Data.Serialize
   , putWord8, putWord16be
   , getWord8, getWord16be
   , getByteString
+  , remaining
   )
 import "bytestring" Data.ByteString ( ByteString )
 import qualified "bytestring" Data.ByteString as BS
@@ -78,6 +82,10 @@ newtype ProtocolId
 
 newtype UnitId
       = UnitId { unUnitId :: Word8 }
+        deriving (Bounded, Enum, Eq, Num, Ord, Read, Show)
+
+newtype SlaveId
+      = SlaveId { unSlaveId :: Word8 }
         deriving (Bounded, Enum, Eq, Num, Ord, Read, Show)
 
 newtype RegAddress
@@ -127,47 +135,145 @@ newtype Session a
 runSession :: Connection -> Session a -> ExceptT ModbusException IO a
 runSession conn session = runReaderT (runSession' session) conn
 
+data ModbusTCP
+
+data ModbusRTU
+
+class (Serialize (HeaderType a)
+      ,Eq (HeaderType a)
+      ,Show (HeaderType a)
+      ,Serialize (CrcType a)
+      ,Eq (CrcType a)
+      ,Show (CrcType a)) =>
+  ModbusVariation a where
+  type HeaderType a
+  type CrcType a
+  crcFunction :: Proxy a -> ByteString -> CrcType a
+  getFrameBodyLength :: Proxy a -> HeaderType a -> Get Int
+  adjustHeader :: Proxy a -> ByteString -> HeaderType a -> HeaderType a
+  nextTransaction :: Proxy a -> HeaderType a -> HeaderType a
+
+instance ModbusVariation ModbusTCP where
+  type HeaderType ModbusTCP = HeaderTCP
+  type CrcType ModbusTCP = ()
+  crcFunction _ _ = ()
+  getFrameBodyLength _ header = pure $ fromIntegral (hdrtcpLength header) - 2
+  adjustHeader _ fdata header = header { hdrtcpLength = fromIntegral $ 2 + BS.length fdata }
+  nextTransaction _ header = header { hdrtcpTransactionId = 1 + hdrtcpTransactionId header }
+
+newtype ModbusCRC = ModbusCRC { unModbusCRC :: Word16 } deriving (Eq, Show)
+
+instance Serialize ModbusCRC where
+  get = ModbusCRC <$> getWord16be
+  put = putWord16be . unModbusCRC
+
+instance ModbusVariation ModbusRTU where
+  type HeaderType ModbusRTU = HeaderRTU
+  type CrcType ModbusRTU = ModbusCRC
+  -- https://github.com/jhickner/haskell-modbus/blob/master/Data/Digest/CRC16.hs
+  crcFunction _ = ModbusCRC . foldl' f 0xFFFF . BS.unpack
+    where
+      f ac v = (ac `shiftR` 8) `xor` (table ! idx)
+        where idx = (fromIntegral v `xor` ac) .&. 0xFF
+      table :: Array Word16 Word16
+      table = listArray (0,255) tableList
+      tableList :: [Word16]
+      tableList =
+        [0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241
+        ,0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1, 0xC481, 0x0440
+        ,0xCC01, 0x0CC0, 0x0D80, 0xCD41, 0x0F00, 0xCFC1, 0xCE81, 0x0E40
+        ,0x0A00, 0xCAC1, 0xCB81, 0x0B40, 0xC901, 0x09C0, 0x0880, 0xC841
+        ,0xD801, 0x18C0, 0x1980, 0xD941, 0x1B00, 0xDBC1, 0xDA81, 0x1A40
+        ,0x1E00, 0xDEC1, 0xDF81, 0x1F40, 0xDD01, 0x1DC0, 0x1C80, 0xDC41
+        ,0x1400, 0xD4C1, 0xD581, 0x1540, 0xD701, 0x17C0, 0x1680, 0xD641
+        ,0xD201, 0x12C0, 0x1380, 0xD341, 0x1100, 0xD1C1, 0xD081, 0x1040
+        ,0xF001, 0x30C0, 0x3180, 0xF141, 0x3300, 0xF3C1, 0xF281, 0x3240
+        ,0x3600, 0xF6C1, 0xF781, 0x3740, 0xF501, 0x35C0, 0x3480, 0xF441
+        ,0x3C00, 0xFCC1, 0xFD81, 0x3D40, 0xFF01, 0x3FC0, 0x3E80, 0xFE41
+        ,0xFA01, 0x3AC0, 0x3B80, 0xFB41, 0x3900, 0xF9C1, 0xF881, 0x3840
+        ,0x2800, 0xE8C1, 0xE981, 0x2940, 0xEB01, 0x2BC0, 0x2A80, 0xEA41
+        ,0xEE01, 0x2EC0, 0x2F80, 0xEF41, 0x2D00, 0xEDC1, 0xEC81, 0x2C40
+        ,0xE401, 0x24C0, 0x2580, 0xE541, 0x2700, 0xE7C1, 0xE681, 0x2640
+        ,0x2200, 0xE2C1, 0xE381, 0x2340, 0xE101, 0x21C0, 0x2080, 0xE041
+        ,0xA001, 0x60C0, 0x6180, 0xA141, 0x6300, 0xA3C1, 0xA281, 0x6240
+        ,0x6600, 0xA6C1, 0xA781, 0x6740, 0xA501, 0x65C0, 0x6480, 0xA441
+        ,0x6C00, 0xACC1, 0xAD81, 0x6D40, 0xAF01, 0x6FC0, 0x6E80, 0xAE41
+        ,0xAA01, 0x6AC0, 0x6B80, 0xAB41, 0x6900, 0xA9C1, 0xA881, 0x6840
+        ,0x7800, 0xB8C1, 0xB981, 0x7940, 0xBB01, 0x7BC0, 0x7A80, 0xBA41
+        ,0xBE01, 0x7EC0, 0x7F80, 0xBF41, 0x7D00, 0xBDC1, 0xBC81, 0x7C40
+        ,0xB401, 0x74C0, 0x7580, 0xB541, 0x7700, 0xB7C1, 0xB681, 0x7640
+        ,0x7200, 0xB2C1, 0xB381, 0x7340, 0xB101, 0x71C0, 0x7080, 0xB041
+        ,0x5000, 0x90C1, 0x9181, 0x5140, 0x9301, 0x53C0, 0x5280, 0x9241
+        ,0x9601, 0x56C0, 0x5780, 0x9741, 0x5500, 0x95C1, 0x9481, 0x5440
+        ,0x9C01, 0x5CC0, 0x5D80, 0x9D41, 0x5F00, 0x9FC1, 0x9E81, 0x5E40
+        ,0x5A00, 0x9AC1, 0x9B81, 0x5B40, 0x9901, 0x59C0, 0x5880, 0x9841
+        ,0x8801, 0x48C0, 0x4980, 0x8941, 0x4B00, 0x8BC1, 0x8A81, 0x4A40
+        ,0x4E00, 0x8EC1, 0x8F81, 0x4F40, 0x8D01, 0x4DC0, 0x4C80, 0x8C41
+        ,0x4400, 0x84C1, 0x8581, 0x4540, 0x8701, 0x47C0, 0x4680, 0x8641
+        ,0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040]
+  getFrameBodyLength _ _ = (\x -> x - 2) <$> remaining
+  adjustHeader _ _ = id
+  nextTransaction _ = id
+
 -- | MODBUS TCP/IP Application Data Unit
 --
 -- See: MODBUS Application Protocol Specification V1.1b, section 4.1
-data TCP_ADU
-   = TCP_ADU
-     { aduHeader   :: !Header
+data ADU v
+   = (ModbusVariation v) => ADU
+     { aduProxy    :: Proxy v
+     , aduHeader   :: !(HeaderType v)
      , aduFunction :: !FunctionCode
      , aduData     :: !ByteString
-     } deriving (Eq, Show)
+     , aduCrc      :: !(CrcType v)
+     }
 
-instance Serialize TCP_ADU where
-  put (TCP_ADU header fc ws) = do
+deriving instance ModbusVariation v => Eq (ADU v)
+deriving instance ModbusVariation v => Show (ADU v)
+
+instance (ModbusVariation v) => Serialize (ADU v) where
+  put (ADU _ header fc ws crc) = do
       put header
       put fc
       mapM_ putWord8 (BS.unpack ws)
+      put crc
 
   get = do
       header <- get
       fc     <- get
-      ws     <- getByteString $ fromIntegral (hdrLength header) - 2
-      return $ TCP_ADU header fc ws
+      ws     <- getFrameBodyLength (Proxy @v) header >>= getByteString
+      crc    <- get
+      return $ ADU (Proxy @v) header fc ws crc
 
 -- | MODBUS Application Protocol Header
 --
 -- See: MODBUS Application Protocol Specification V1.1b, section 4.1
-data Header
-   = Header
-     { hdrTransactionId :: !TransactionId
-     , hdrProtocolId    :: !ProtocolId
-     , hdrLength        :: !Word16
-     , hdrUnitId        :: !UnitId
-     } deriving (Eq, Show)
+data HeaderTCP =
+  HeaderTCP
+  { hdrtcpTransactionId :: !TransactionId
+  , hdrtcpProtocolId    :: !ProtocolId
+  , hdrtcpLength        :: !Word16
+  , hdrtcpUnitId        :: !UnitId
+  }
+  deriving (Eq,Show)
+data HeaderRTU =
+  HeaderRTU
+  { hdrrtuSlaveId :: !SlaveId
+  }
+  deriving (Eq, Show)
 
-instance Serialize Header where
-    put (Header (TransactionId tid) (ProtocolId pid) len (UnitId uid)) =
+instance Serialize HeaderTCP where
+    put (HeaderTCP (TransactionId tid) (ProtocolId pid) len (UnitId uid)) =
       putWord16be tid >> putWord16be pid >> putWord16be len >> putWord8 uid
-    get = Header
+    get = HeaderTCP
           <$> (TransactionId <$> getWord16be)
           <*> (ProtocolId    <$> getWord16be)
           <*> getWord16be
           <*> (UnitId <$> getWord8)
+
+instance Serialize HeaderRTU where
+    put (HeaderRTU (SlaveId sid)) =
+      putWord8 sid
+    get = HeaderRTU . SlaveId <$> getWord8
 
 -- | The function code field of a MODBUS data unit is coded in one
 -- byte. Valid codes are in the range of 1 ... 255 decimal (the range
@@ -389,23 +495,23 @@ instance Exception ModbusException
 
 -- | Sends a raw MODBUS command.
 command
-    :: TransactionId
-    -> ProtocolId
-    -> UnitId
+    :: forall v. (ModbusVariation v)
+    => Proxy v
+    -> HeaderType v
     -> FunctionCode -- ^ PDU function code.
     -> ByteString   -- ^ PDU data.
-    -> Session TCP_ADU
-command tid pid uid fc fdata = do
+    -> Session (ADU v)
+command proxy hdr fc fdata = do
     conn <- ask
     Session $ lift $ withConn conn
   where
-    withConn :: Connection -> ExceptT ModbusException IO TCP_ADU
+    withConn :: Connection -> ExceptT ModbusException IO (ADU v)
     withConn conn = go 1
       where
-        go :: Int -> ExceptT ModbusException IO TCP_ADU
+        go :: Int -> ExceptT ModbusException IO (ADU v)
         go !tries =
             catchError
-              (command' conn tid pid uid fc fdata)
+              (command' conn proxy hdr fc fdata)
               (\err ->
                 bool (throwError err)
                      (go $ tries + 1)
@@ -413,14 +519,14 @@ command tid pid uid fc fdata = do
               )
 
 command'
-    :: Connection
-    -> TransactionId
-    -> ProtocolId
-    -> UnitId
+    :: forall v. (ModbusVariation v)
+    => Connection
+    -> Proxy v
+    -> HeaderType v
     -> FunctionCode -- ^ PDU function code.
     -> ByteString   -- ^ PDU data.
-    -> ExceptT ModbusException IO TCP_ADU
-command' conn tid pid uid fc fdata = do
+    -> ExceptT ModbusException IO (ADU v)
+command' conn proxy hdr fc fdata = do
     mbResult <- liftIO $ timeout (connCommandTimeout conn) $ do
       void $ connWrite conn (Cereal.encode cmd)
       connRead conn 512
@@ -434,92 +540,94 @@ command' conn tid pid uid fc fdata = do
             $ Cereal.decode (aduData adu)
       _ -> pure adu
   where
-    cmd = TCP_ADU (Header tid pid (fromIntegral $ 2 + BS.length fdata) uid)
-                  fc
-                  fdata
+    header :: HeaderType v
+    header = adjustHeader proxy fdata hdr
+    cmd = ADU proxy header fc fdata crc
+    crc :: CrcType v
+    crc = crcFunction proxy (Cereal.encode header <> Cereal.encode fc <> fdata)
 
 readCoils
-    :: TransactionId
-    -> ProtocolId
-    -> UnitId
+    :: (ModbusVariation v)
+    => Proxy v
+    -> HeaderType v
     -> RegAddress
     -> Word16
     -> Session [Word8]
-readCoils tid pid uid addr count =
-    withAduData tid pid uid ReadCoils
+readCoils proxy hdr addr count =
+    withAduData proxy hdr ReadCoils
                 (putRegAddress addr >> putWord16be count)
                 decodeW8s
 
 readDiscreteInputs
-    :: TransactionId
-    -> ProtocolId
-    -> UnitId
+    :: (ModbusVariation v)
+    => Proxy v
+    -> HeaderType v
     -> RegAddress
     -> Word16
     -> Session [Word8]
-readDiscreteInputs tid pid uid addr count =
-    withAduData tid pid uid ReadDiscreteInputs
+readDiscreteInputs proxy hdr addr count =
+    withAduData proxy hdr ReadDiscreteInputs
                 (putRegAddress addr >> putWord16be count)
                 decodeW8s
 
 readHoldingRegisters
-    :: TransactionId
-    -> ProtocolId
-    -> UnitId
+    :: (ModbusVariation v)
+    => Proxy v
+    -> HeaderType v
     -> RegAddress -- ^ Register starting address.
     -> Word16 -- ^ Quantity of registers.
     -> Session [Word16]
-readHoldingRegisters tid pid uid addr count =
-    withAduData tid pid uid ReadHoldingRegisters
+readHoldingRegisters proxy hdr addr count =
+    withAduData proxy hdr ReadHoldingRegisters
                 (putRegAddress addr >> putWord16be count)
                 decodeW16s
 
 readInputRegisters
-    :: TransactionId
-    -> ProtocolId
-    -> UnitId
+    :: (ModbusVariation v)
+    => Proxy v
+    -> HeaderType v
     -> RegAddress -- ^ Starting address.
     -> Word16 -- ^ Quantity of input registers.
     -> Session [Word16]
-readInputRegisters tid pid uid addr count =
-    withAduData tid pid uid ReadInputRegisters
+readInputRegisters proxy hdr addr count =
+    withAduData proxy hdr ReadInputRegisters
                 (putRegAddress addr >> putWord16be count)
                 decodeW16s
 
 writeSingleCoil
-    :: TransactionId
-    -> ProtocolId
-    -> UnitId
+    :: (ModbusVariation v)
+    => Proxy v
+    -> HeaderType v
     -> RegAddress
     -> Bool
     -> Session ()
-writeSingleCoil tid pid uid addr value =
-    void $ command tid pid uid WriteSingleCoil
+writeSingleCoil proxy hdr addr value =
+    void $ command proxy hdr WriteSingleCoil
                    (runPut $ putRegAddress addr >> putWord16be value')
   where
     value' | value     = 0xFF00
            | otherwise = 0x0000
 
 writeSingleRegister
-    :: TransactionId
-    -> ProtocolId
-    -> UnitId
+    :: (ModbusVariation v)
+    => Proxy v
+    -> HeaderType v
     -> RegAddress -- ^ Register address.
     -> Word16 -- ^ Register value.
     -> Session ()
-writeSingleRegister tid pid uid addr value =
-    void $ command tid pid uid WriteSingleRegister
+writeSingleRegister proxy hdr addr value =
+    void $ command proxy hdr WriteSingleRegister
                    (runPut $ putRegAddress addr >> putWord16be value)
 
 writeMultipleRegisters
-    :: TransactionId
-    -> ProtocolId
-    -> UnitId
+    :: (ModbusVariation v)
+    => Proxy v
+    -> HeaderType v
     -> RegAddress -- ^ Register starting address
     -> [Word16] -- ^ Register values to be written
     -> Session Word16
-writeMultipleRegisters tid pid uid addr values =
-    withAduData tid pid uid WriteMultipleRegisters
+writeMultipleRegisters proxy hdr addr values =
+    withAduData proxy hdr WriteMultipleRegisters
                 (do putRegAddress addr
                     putWord16be $ fromIntegral numRegs
                     putWord8    $ fromIntegral numRegs
@@ -533,15 +641,15 @@ writeMultipleRegisters tid pid uid addr values =
 --------------------------------------------------------------------------------
 
 withAduData
-    :: TransactionId
-    -> ProtocolId
-    -> UnitId
+    :: (ModbusVariation v)
+    => Proxy v
+    -> HeaderType v
     -> FunctionCode
     -> Put -- ^ PDU data
     -> Get a -- ^ Parser of resulting 'aduData'
     -> Session a
-withAduData tid pid uid fc fdata parser = do
-    adu <- command tid pid uid fc (runPut fdata)
+withAduData proxy hdr fc fdata parser = do
+    adu <- command proxy hdr fc (runPut fdata)
     Session $ lift $ withExceptT DecodeException $ ExceptT $ pure $ runGet parser $ aduData adu
 
 putRegAddress :: RegAddress -> Put

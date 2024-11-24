@@ -1,35 +1,48 @@
-name:          modbus-tcp
-version:       0.5
-cabal-version: >= 1.10
-build-type:    Simple
-stability:     experimental
-author:        Roel van Dijk <roel@lambdacube.nl>, Tim Schwarte <tim@timschwarte.nl>
-maintainer:    Roel van Dijk <roel@lambdacube.nl>
-copyright:     2013–2017 Roel van Dijk, Tim Schwarte
-license:       BSD3
-license-file:  LICENSE
-homepage:      https://github.com/roelvandijk/modbus-tcp
-bug-reports:   https://github.com/roelvandijk/modbus-tcp/issues
-category:      System
-synopsis:      Communicate with Modbus devices over TCP
-description:   Implements the Modbus TPC/IP protocol.
+cabal-version: 1.12
 
-source-repository head
-    type:     git
-    location: git://github.com/roelvandijk/modbus-tcp.git
+-- This file has been generated from package.yaml by hpack version 0.36.0.
+--
+-- see: https://github.com/sol/hpack
+
+name:           modbus-tcp
+version:        0.6
+synopsis:       Communicate with Modbus devices over TCP and over serial interface
+description:    Implements the Modbus TCP and RTU protocol variations.
+category:       System
+stability:      experimental
+homepage:       https://github.com/gzh/modbus-tcp
+author:         Roel van Dijk <roel@lambdacube.nl>, Tim Schwarte <tim@timschwarte.nl>
+maintainer:     Roel van Dijk <roel@lambdacube.nl>
+copyright:      2013–2017 Roel van Dijk, Tim Schwarte
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
 
 library
-    hs-source-dirs: src
-    ghc-options: -Wall
-
-    build-depends:
-        base         >= 4.9     && < 5
-      , bytestring   >= 0.10.6  && < 0.12
-      , cereal       >= 0.5.1   && < 0.6
-      , mtl          >= 2.2.1   && < 3
-      , transformers >= 0.5.2
-
-    exposed-modules:
-        System.Modbus.TCP
-
-    default-language: Haskell2010
+  exposed-modules:
+      System.Modbus.TCP
+  other-modules:
+      Paths_modbus_tcp
+  hs-source-dirs:
+      src
+  default-extensions:
+      TypeFamilies
+      BangPatterns
+      DeriveDataTypeable
+      GeneralizedNewtypeDeriving
+      PackageImports
+      TypeFamilies
+      ScopedTypeVariables
+      FlexibleContexts
+      GADTs
+      StandaloneDeriving
+      TypeApplications
+  ghc-options: -Wall
+  build-depends:
+      array
+    , base
+    , bytestring
+    , cereal
+    , mtl
+    , transformers
+  default-language: Haskell2010
