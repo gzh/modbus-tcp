@@ -57,8 +57,8 @@ import qualified "cereal" Data.Serialize as Cereal ( encode, decode )
 import "cereal" Data.Serialize
   ( Serialize, Put, put, Get, get
   , runPut, runGet
-  , putWord8, putWord16be
-  , getWord8, getWord16be
+  , putWord8, putWord16be, putWord16host
+  , getWord8, getWord16be, getWord16host
   , getByteString
   , remaining
   )
@@ -164,8 +164,8 @@ instance ModbusVariation ModbusTCP where
 newtype ModbusCRC = ModbusCRC { unModbusCRC :: Word16 } deriving (Eq, Show)
 
 instance Serialize ModbusCRC where
-  get = ModbusCRC <$> getWord16be
-  put = putWord16be . unModbusCRC
+  get = ModbusCRC <$> getWord16host
+  put = putWord16host . unModbusCRC
 
 instance ModbusVariation ModbusRTU where
   type HeaderType ModbusRTU = HeaderRTU
